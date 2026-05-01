@@ -1,77 +1,124 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { ContactInfo, DoctorResult } from "@/types";
-import nodemailer from "nodemailer";
+import { Resend } from "resend";
+import OpenAI from "openai";
+import fs from "fs";
+import path from "path";
+import { upsertUser, createRequest, updateRequestStatus } from "@/lib/db";
 
 interface ContactRequest {
   doctor: DoctorResult;
   contact: ContactInfo;
   problem: string;
+  emailText?: string; // optional: bereits generierter & ggf. editierter Text
 }
 
-function buildEmailText(contact: ContactInfo, doctor: DoctorResult, problem: string): string {
-  const birthDate = new Date(contact.birthDate).toLocaleDateString("de-DE");
-  return `Sehr geehrte Damen und Herren,
+const TEST_MODE = true;
+const TEST_EMAIL = "hoche@me.com";
+const COUNTER_FILE = path.join(process.cwd(), ".test-counter");
 
-ich wende mich an Sie mit der Bitte um einen Termin in Ihrer Praxis.
+function getNextTestNumber(): string {
+  try {
+    const current = fs.existsSync(COUNTER_FILE)
+      ? parseInt(fs.readFileSync(COUNTER_FILE, "utf-8").trim(), 10)
+      : 0;
+    const next = (isNaN(current) ? 0 : current) + 1;
+    fs.writeFileSync(COUNTER_FILE, String(next));
+    return String(next).padStart(3, "0");
+  } catch {
+    return String(Date.now()).slice(-3);
+  }
+}
 
-Meine Angaben:
-Name: ${contact.firstName} ${contact.lastName}
-Geburtsdatum: ${birthDate}
-Telefon: ${contact.phone}
-E-Mail: ${contact.email}
-Versicherung: ${contact.insuranceType === "gesetzlich" ? "Gesetzlich versichert (GKV)" : "Privat versichert (PKV)"}
+function buildContactBlockText(contact: ContactInfo): string {
+  const birthDate = new Date(contact.birthDate).toLocaleDateString("de-DE", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+  const insurance = contact.insuranceType === "gesetzlich" ? "Gesetzlich (GKV)" : "Privat (PKV)";
+  return [
+    "Meine Kontaktdaten:",
+    `Name:                ${contact.firstName} ${contact.lastName}`,
+    `Geburtsdatum:      ${birthDate}`,
+    `Telefon:              ${contact.phone}`,
+    `E-Mail:               ${contact.email}`,
+    `Versicherung:     ${insurance}`,
+  ].join("\n");
+}
 
-Mein Anliegen:
-${problem}
-
-Ich bitte Sie, mich unter den oben angegebenen Kontaktdaten zu kontaktieren, um einen passenden Termin zu vereinbaren.
-
-Mit freundlichen Grüßen,
-${contact.firstName} ${contact.lastName}`;
+async function generateIntro(doctor: DoctorResult, problem: string): Promise<string> {
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    max_tokens: 300,
+    messages: [
+      {
+        role: "system",
+        content:
+          "Du formulierst den Einleitungstext einer Terminanfrage-E-Mail an eine Arztpraxis. Schreibe nur 2-3 höfliche Sätze auf Deutsch: Anrede, Schilderung des Anliegens, Bitte um Termin. Kein Abschluss, keine Kontaktdaten.",
+      },
+      {
+        role: "user",
+        content: `Praxis: ${doctor.name} (${doctor.specialty})\nAnliegen: ${problem}`,
+      },
+    ],
+  });
+  return completion.choices[0]?.message?.content?.trim() ?? "";
 }
 
 export async function POST(req: NextRequest) {
-  try {
-    const { doctor, contact, problem }: ContactRequest = await req.json();
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) return NextResponse.json({ error: "RESEND_API_KEY nicht konfiguriert." }, { status: 500 });
+  if (!process.env.OPENAI_API_KEY) return NextResponse.json({ error: "OPENAI_API_KEY nicht konfiguriert." }, { status: 500 });
 
-    if (!doctor.email) {
-      return NextResponse.json(
-        { error: "Keine E-Mail-Adresse für diese Praxis verfügbar" },
-        { status: 400 }
-      );
+  try {
+    const { doctor, contact, problem, emailText }: ContactRequest = await req.json();
+
+    const userId = upsertUser(contact);
+    const requestId = createRequest({
+      userId, doctorId: doctor.id, doctorName: doctor.name,
+      specialty: doctor.specialty, address: doctor.address,
+      city: doctor.city, zip: doctor.zip, phone: doctor.phone,
+      email: doctor.email, website: doctor.website,
+      distance: doctor.distance, problem, method: "email",
+    });
+
+    const resend = new Resend(apiKey);
+    const testNumber = getNextTestNumber();
+
+    const text = emailText ?? `${await generateIntro(doctor, problem)}\n\n${buildContactBlockText(contact)}\n\nMit freundlichen Grüßen,\n${contact.firstName} ${contact.lastName}`;
+
+    const subject = TEST_MODE
+      ? `Docsearch_test_nr_${testNumber}`
+      : `Terminanfrage – ${contact.firstName} ${contact.lastName}`;
+    const recipient = TEST_MODE ? TEST_EMAIL : (doctor.email ?? TEST_EMAIL);
+
+    const { data, error } = await resend.emails.send({
+      from: `${contact.firstName} ${contact.lastName} <onboarding@resend.dev>`,
+      replyTo: contact.email,
+      to: recipient,
+      subject,
+      text,
+    });
+
+    if (error) {
+      updateRequestStatus(requestId, "error", error.message);
+      return NextResponse.json({ error: "E-Mail konnte nicht gesendet werden", details: error.message }, { status: 500 });
     }
 
-    const transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || "smtp.gmail.com",
-      port: Number(process.env.SMTP_PORT) || 587,
-      secure: false,
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-      },
-    });
-
-    const birthDate = new Date(contact.birthDate).toLocaleDateString("de-DE");
-    const subject = `Terminanfrage – ${contact.firstName} ${contact.lastName} (geb. ${birthDate})`;
-
-    await transporter.sendMail({
-      from: `"${contact.firstName} ${contact.lastName}" <${process.env.SMTP_USER}>`,
-      replyTo: contact.email,
-      to: doctor.email,
-      subject,
-      text: buildEmailText(contact, doctor, problem),
-    });
+    updateRequestStatus(requestId, "sent", `E-Mail ID: ${data?.id}`, new Date().toISOString());
 
     return NextResponse.json({
       success: true,
+      requestId: requestId,
       method: "email",
       timestamp: new Date().toISOString(),
+      testMode: TEST_MODE,
+      testNumber,
     });
   } catch (error) {
     console.error("Contact error:", error);
-    return NextResponse.json(
-      { error: "E-Mail konnte nicht gesendet werden", details: String(error) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Fehler beim Verarbeiten", details: String(error) }, { status: 500 });
   }
 }

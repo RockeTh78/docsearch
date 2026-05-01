@@ -51,7 +51,6 @@ export const SPECIALTIES = [
   { value: "zahnarzt", label: "Zahnarzt" },
   { value: "radiologie", label: "Radiologie" },
   { value: "gastroenterologie", label: "Gastroenterologie" },
-  { value: "urologie", label: "Urologie" },
   { value: "kinderheilkunde", label: "Kinderheilkunde / Kinderarzt" },
 ];
 

@@ -1,71 +1,88 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { SearchFormData, DoctorResult } from "@/types";
 
-const SPECIALTY_MAP: Record<string, string> = {
-  allgemeinmedizin: "Allgemeinmedizin",
-  innere_medizin: "Innere Medizin",
-  orthopadie: "Orthopädie",
-  dermatologie: "Dermatologie",
-  hno: "Hals-Nasen-Ohrenheilkunde",
-  augenheilkunde: "Augenheilkunde",
-  gynakologie: "Gynäkologie",
-  urologie: "Urologie",
-  neurologie: "Neurologie",
-  psychiatrie: "Psychiatrie",
-  kardiologie: "Innere Medizin/Kardiologie",
-  zahnarzt: "Zahnmedizin",
-  radiologie: "Radiologie",
-  gastroenterologie: "Innere Medizin/Gastroenterologie",
-  kinderheilkunde: "Kinder- und Jugendmedizin",
+// Werte entsprechen dem OSM-Tag healthcare:speciality
+const SPECIALTY_OSM: Record<string, string[]> = {
+  allgemeinmedizin:  ["general"],
+  innere_medizin:    ["internal"],
+  orthopadie:        ["orthopaedics"],
+  dermatologie:      ["dermatology"],
+  hno:               ["otolaryngology"],
+  augenheilkunde:    ["ophthalmology"],
+  gynakologie:       ["gynaecology"],
+  urologie:          ["urology"],
+  neurologie:        ["neurology"],
+  psychiatrie:       ["psychiatry", "psychotherapist"],
+  kardiologie:       ["cardiology"],
+  zahnarzt:          ["dentist"],
+  radiologie:        ["radiology"],
+  gastroenterologie: ["gastroenterology"],
+  kinderheilkunde:   ["paediatrics"],
 };
 
-async function searchDoctors116117(
-  location: string,
-  specialty: string,
-  radius: number
-): Promise<DoctorResult[]> {
-  const fachgebiet = SPECIALTY_MAP[specialty] || specialty;
-
-  // 116117.de nutzt eine interne API – wir rufen die Suche ab
-  const url = new URL("https://www.116117.de/api/arztsuche");
-  url.searchParams.set("q", fachgebiet);
-  url.searchParams.set("location", location);
-  url.searchParams.set("radius", String(radius));
-
-  const res = await fetch(url.toString(), {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (compatible; DocSearch/1.0)",
-      Accept: "application/json",
-    },
-    next: { revalidate: 0 },
+async function geocode(location: string): Promise<{ lat: number; lon: number } | null> {
+  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(location)},Deutschland&format=json&limit=1&countrycodes=de`;
+  const res = await fetch(url, {
+    headers: { "User-Agent": "DocSearch/1.0 (hoche@me.com)" },
   });
-
-  if (!res.ok) {
-    throw new Error(`116117 API error: ${res.status}`);
-  }
-
   const data = await res.json();
-  return parseDoctors116117(data);
+  if (!data.length) return null;
+  return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
 }
 
-function parseDoctors116117(data: unknown): DoctorResult[] {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const raw = data as any;
-  const items = raw?.results || raw?.items || raw?.data || [];
+function buildOverpassQuery(lat: number, lon: number, radiusM: number, specialty: string): string {
+  const specialities = SPECIALTY_OSM[specialty] ?? ["general"];
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return items.map((item: any, idx: number) => ({
-    id: item.id || String(idx),
-    name: item.name || item.arztname || item.praxisname || "Unbekannt",
-    specialty: item.fachgebiet || item.specialty || "",
-    address: item.strasse || item.address || "",
-    city: item.ort || item.city || "",
-    zip: item.plz || item.zip || "",
-    phone: item.telefon || item.phone,
-    email: item.email,
-    website: item.website || item.url,
-    distance: item.distance || item.entfernung,
-  }));
+  const filters = specialities
+    .flatMap((s) => [
+      `node["healthcare:speciality"="${s}"](around:${radiusM},${lat},${lon});`,
+      `way["healthcare:speciality"="${s}"](around:${radiusM},${lat},${lon});`,
+    ])
+    .join("\n  ");
+
+  // Zahnarzt extra via amenity=dentist (häufiger getaggt)
+  const dentistExtra = specialty === "zahnarzt"
+    ? `node["amenity"="dentist"](around:${radiusM},${lat},${lon});\n  node["healthcare"="dentist"](around:${radiusM},${lat},${lon});`
+    : "";
+
+  return `[out:json][timeout:25];
+(
+  ${filters}
+  ${dentistExtra}
+);
+out body;`;
+}
+
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function parseOsmNode(node: any, centerLat: number, centerLon: number, specialty: string): DoctorResult {
+  const tags = node.tags ?? {};
+  const name = tags.name ?? tags["name:de"] ?? "Unbekannte Praxis";
+  const street = tags["addr:street"] ?? "";
+  const housenumber = tags["addr:housenumber"] ?? "";
+  const address = [street, housenumber].filter(Boolean).join(" ");
+
+  return {
+    id: String(node.id),
+    name,
+    specialty: tags["healthcare:speciality"] ?? tags.healthcare ?? specialty,
+    address,
+    city: tags["addr:city"] ?? tags["addr:suburb"] ?? "",
+    zip: tags["addr:postcode"] ?? "",
+    phone: tags.phone ?? tags["contact:phone"],
+    email: tags.email ?? tags["contact:email"],
+    website: tags.website ?? tags["contact:website"],
+    distance: haversineKm(centerLat, centerLon, node.lat, node.lon),
+  };
 }
 
 export async function POST(req: NextRequest) {
@@ -74,20 +91,33 @@ export async function POST(req: NextRequest) {
     const { location, specialty, radius } = body;
 
     if (!location || !specialty) {
-      return NextResponse.json(
-        { error: "Ort und Fachrichtung sind erforderlich" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Ort und Fachrichtung sind erforderlich" }, { status: 400 });
     }
 
-    const doctors = await searchDoctors116117(location, specialty, radius);
+    const coords = await geocode(location);
+    if (!coords) {
+      return NextResponse.json({ error: `Ort "${location}" nicht gefunden` }, { status: 404 });
+    }
+
+    const radiusM = radius * 1000;
+    const query = buildOverpassQuery(coords.lat, coords.lon, radiusM, specialty);
+
+    const overpassRes = await fetch(
+      `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`,
+      { headers: { "Accept": "application/json", "User-Agent": "DocSearch/1.0 (hoche@me.com)" } }
+    );
+
+    if (!overpassRes.ok) throw new Error(`Overpass API Fehler: ${overpassRes.status}`);
+
+    const overpassData = await overpassRes.json();
+    const doctors: DoctorResult[] = (overpassData.elements ?? [])
+      .map((node: unknown) => parseOsmNode(node, coords.lat, coords.lon, specialty))
+      .filter((d: DoctorResult) => d.name !== "Unbekannte Praxis" || d.address)
+      .sort((a: DoctorResult, b: DoctorResult) => (a.distance ?? 0) - (b.distance ?? 0));
 
     return NextResponse.json({ doctors, total: doctors.length });
   } catch (error) {
     console.error("Search error:", error);
-    return NextResponse.json(
-      { error: "Suche fehlgeschlagen", details: String(error) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Suche fehlgeschlagen", details: String(error) }, { status: 500 });
   }
 }

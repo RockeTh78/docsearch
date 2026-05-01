@@ -1,0 +1,46 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id            String    @id @default(cuid())
+  firstName     String
+  lastName      String
+  email         String    @unique
+  phone         String
+  birthDate     String
+  insuranceType String    @default("gesetzlich")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  requests      Request[]
+}
+
+model Request {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  doctorId    String
+  doctorName  String
+  specialty   String
+  address     String
+  city        String
+  zip         String
+  phone       String?
+  email       String?
+  website     String?
+  distance    Float?
+  problem     String
+  method      String   @default("email") // "email" | "form" | "phone"
+  status      String   @default("pending") // "pending" | "sent" | "responded" | "error"
+  statusMsg   String?
+  sentAt      DateTime?
+  respondedAt DateTime?
+  notes       String?  // Arzt-Antwort oder interne Notiz
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}

@@ -11,17 +11,17 @@ interface Props {
 
 export default function SearchForm({ onSearch, loading }: Props) {
   const [contact, setContact] = useState<ContactInfo>({
-    firstName: "",
-    lastName: "",
-    email: "",
-    phone: "",
-    birthDate: "",
-    insuranceType: "gesetzlich",
+    firstName: "Thomas",
+    lastName: "Hoche",
+    email: "hoche@me.com",
+    phone: "0151 12345678",
+    birthDate: "1978-06-15",
+    insuranceType: "privat",
   });
-  const [location, setLocation] = useState("");
-  const [radius, setRadius] = useState(10);
-  const [specialty, setSpecialty] = useState("");
-  const [problem, setProblem] = useState("");
+  const [location, setLocation] = useState("München");
+  const [radius, setRadius] = useState(5);
+  const [specialty, setSpecialty] = useState("allgemeinmedizin");
+  const [problem, setProblem] = useState("Ich benötige einen Termin zur allgemeinen Untersuchung und Blutabnahme.");
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
