@@ -127,3 +127,4 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Fehler beim Verarbeiten", details: String(error) }, { status: 500 });
   }
 }
+// cache-bust: 1777747318
