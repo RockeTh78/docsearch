@@ -14,7 +14,7 @@ interface ContactRequest {
 }
 
 const TEST_MODE = true;
-const TEST_EMAIL = "hoche@me.com";
+const TEST_EMAIL = "testarzt@facharzt-kontakt.org";
 const COUNTER_FILE = path.join(process.cwd(), ".test-counter");
 
 function getNextTestNumber(): string {
@@ -94,9 +94,14 @@ export async function POST(req: NextRequest) {
       : `Terminanfrage – ${contact.firstName} ${contact.lastName}`;
     const recipient = TEST_MODE ? TEST_EMAIL : (doctor.email ?? TEST_EMAIL);
 
+    const inboundDomain = process.env.INBOUND_DOMAIN;
+    const replyTo = inboundDomain
+      ? `${contact.firstName} ${contact.lastName} <reply+${requestId}@${inboundDomain}>`
+      : contact.email;
+
     const { data, error } = await resend.emails.send({
-      from: `${contact.firstName} ${contact.lastName} <onboarding@resend.dev>`,
-      replyTo: contact.email,
+      from: `${contact.firstName} ${contact.lastName} <noreply@facharzt-kontakt.org>`,
+      replyTo,
       to: recipient,
       subject,
       text,
