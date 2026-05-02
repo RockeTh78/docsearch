@@ -8,6 +8,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "email Parameter fehlt" }, { status: 400 });
   }
 
-  const requests = getRequestsByEmail(email);
+  const raw = getRequestsByEmail(email) as Record<string, unknown>[];
+  const requests = raw.map(r => ({
+    ...r,
+    doctorEmail: r.email,
+  }));
   return NextResponse.json({ requests });
 }

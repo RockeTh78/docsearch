@@ -38,10 +38,30 @@ db.exec(`
     statusMsg TEXT,
     sentAt TEXT,
     respondedAt TEXT,
+    suggestedAt TEXT,
     notes TEXT,
     createdAt TEXT NOT NULL DEFAULT (datetime('now')),
     updatedAt TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (userId) REFERENCES users(id)
+  );
+`);
+
+try { db.exec("ALTER TABLE requests ADD COLUMN suggestedAt TEXT"); } catch {}
+try { db.exec("ALTER TABLE requests ADD COLUMN appointmentAt TEXT"); } catch {}
+try { db.exec("ALTER TABLE requests ADD COLUMN doctorMessage TEXT"); } catch {}
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS inbox_emails (
+    id TEXT PRIMARY KEY,
+    from_addr TEXT NOT NULL,
+    from_name TEXT,
+    to_addr TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    reply_to TEXT,
+    received_at TEXT NOT NULL DEFAULT (datetime('now')),
+    read INTEGER NOT NULL DEFAULT 0,
+    replied INTEGER NOT NULL DEFAULT 0
   );
 `);
 
@@ -83,6 +103,51 @@ export function createRequest(data: {
 export function updateRequestStatus(id: string, status: string, statusMsg?: string, sentAt?: string) {
   db.prepare(`UPDATE requests SET status=?,statusMsg=?,sentAt=?,updatedAt=datetime('now') WHERE id=?`)
     .run(status, statusMsg ?? null, sentAt ?? null, id);
+}
+
+export function setRequestResponded(id: string, suggestedAt: string, doctorMessage?: string) {
+  db.prepare(`UPDATE requests SET status='responded',suggestedAt=?,doctorMessage=?,respondedAt=datetime('now'),updatedAt=datetime('now') WHERE id=?`)
+    .run(suggestedAt, doctorMessage ?? null, id);
+}
+
+export function storeInboxEmail(data: {
+  from_addr: string; from_name?: string; to_addr: string;
+  subject: string; body: string; reply_to?: string;
+}) {
+  const id = "c" + Math.random().toString(36).slice(2, 11) + Date.now().toString(36);
+  db.prepare(`
+    INSERT INTO inbox_emails (id, from_addr, from_name, to_addr, subject, body, reply_to)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(id, data.from_addr, data.from_name ?? null, data.to_addr,
+         data.subject, data.body, data.reply_to ?? null);
+  return id;
+}
+
+export function getInboxEmails() {
+  return db.prepare(
+    "SELECT * FROM inbox_emails ORDER BY received_at DESC"
+  ).all();
+}
+
+export function markEmailRead(id: string) {
+  db.prepare("UPDATE inbox_emails SET read=1 WHERE id=?").run(id);
+}
+
+export function markEmailReplied(id: string) {
+  db.prepare("UPDATE inbox_emails SET replied=1 WHERE id=?").run(id);
+}
+
+export function getRequestWithUser(requestId: string) {
+  return db.prepare(`
+    SELECT r.*, u.firstName, u.lastName, u.email as userEmail, u.phone, u.birthDate, u.insuranceType
+    FROM requests r JOIN users u ON r.userId = u.id
+    WHERE r.id = ?
+  `).get(requestId) as Record<string, unknown> | undefined ?? null;
+}
+
+export function confirmRequest(id: string, appointmentAt: string) {
+  db.prepare(`UPDATE requests SET appointmentAt=?, updatedAt=datetime('now') WHERE id=?`)
+    .run(appointmentAt, id);
 }
 
 export function getRequestsByEmail(email: string) {

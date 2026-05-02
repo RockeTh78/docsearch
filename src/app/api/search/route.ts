@@ -85,6 +85,19 @@ function parseOsmNode(node: any, centerLat: number, centerLon: number, specialty
   };
 }
 
+const TEST_DOCTOR: DoctorResult = {
+  id: "test-doctor-bad-soden-1",
+  name: "Testpraxis Dr. med. Max Mustermann",
+  specialty: "general",
+  address: "Königsteiner Str. 10",
+  city: "Bad Soden am Taunus",
+  zip: "65812",
+  phone: "+49 6196 123456",
+  email: "testarzt@facharzt-kontakt.org",
+  website: "https://facharzt-kontakt.org",
+  distance: 0.1,
+};
+
 export async function POST(req: NextRequest) {
   try {
     const body: SearchFormData = await req.json();
@@ -114,6 +127,13 @@ export async function POST(req: NextRequest) {
       .map((node: unknown) => parseOsmNode(node, coords.lat, coords.lon, specialty))
       .filter((d: DoctorResult) => d.name !== "Unbekannte Praxis" || d.address)
       .sort((a: DoctorResult, b: DoctorResult) => (a.distance ?? 0) - (b.distance ?? 0));
+
+    // Inject test doctor at top for Bad Soden searches
+    const normalizedLocation = location.toLowerCase();
+    const isBadSoden = normalizedLocation.includes("bad soden") || normalizedLocation.includes("65812");
+    if (isBadSoden) {
+      doctors.unshift({ ...TEST_DOCTOR, specialty });
+    }
 
     return NextResponse.json({ doctors, total: doctors.length });
   } catch (error) {
