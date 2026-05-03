@@ -88,7 +88,7 @@ function parseOsmNode(node: any, centerLat: number, centerLon: number, specialty
 
 const TEST_DOCTOR: DoctorResult = {
   id: "test-doctor-bad-soden-1",
-  name: "Testpraxis Dr. med. Max Mustermann",
+  name: "[Testarzt] Testpraxis Dr. med. Max Mustermann",
   specialty: "general",
   address: "Königsteiner Str. 10",
   city: "Bad Soden am Taunus",
