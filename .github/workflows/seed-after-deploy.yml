@@ -1,0 +1,16 @@
+name: Seed doctors after deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for Railway deploy
+        run: sleep 90
+      - name: Trigger seed
+        run: |
+          curl -sf -X POST https://docsearch-production-c65d.up.railway.app/api/seed-doctors \
+            -H "Content-Type: application/json" | tee /dev/stderr | grep -q '"total":800'
