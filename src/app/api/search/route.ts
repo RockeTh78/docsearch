@@ -114,16 +114,8 @@ export async function POST(req: NextRequest) {
     }
 
     const radiusM = radius * 1000;
-    const query = buildOverpassQuery(coords.lat, coords.lon, radiusM, specialty);
 
-    const overpassRes = await fetch(
-      `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`,
-      { headers: { "Accept": "application/json", "User-Agent": "DocSearch/1.0 (hoche@me.com)" } }
-    );
-
-    if (!overpassRes.ok) throw new Error(`Overpass API Fehler: ${overpassRes.status}`);
-
-    // Testphase: lokale Testärzte haben Vorrang — wenn DB befüllt, nur diese zurückgeben
+    // Testphase: lokale Testärzte — Overpass komplett überspringen
     const localCount = getDoctorCount();
     if (localCount > 0) {
       const localDoctors = searchLocalDoctors(coords.lat, coords.lon, radiusM / 1000, specialty);
@@ -147,6 +139,13 @@ export async function POST(req: NextRequest) {
       if (isBadSoden) results.unshift({ ...TEST_DOCTOR, specialty });
       return NextResponse.json({ doctors: results, total: results.length });
     }
+
+    const query = buildOverpassQuery(coords.lat, coords.lon, radiusM, specialty);
+    const overpassRes = await fetch(
+      `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`,
+      { headers: { "Accept": "application/json", "User-Agent": "DocSearch/1.0 (hoche@me.com)" } }
+    );
+    if (!overpassRes.ok) throw new Error(`Overpass API Fehler: ${overpassRes.status}`);
 
     const overpassData = await overpassRes.json();
     const doctors: DoctorResult[] = (overpassData.elements ?? [])
