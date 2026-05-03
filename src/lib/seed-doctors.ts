@@ -189,7 +189,7 @@ export function generateSeedDoctors(): SeedDoctor[] {
 
       doctors.push({
         id: `seed-${bundesland.slice(0, 3).toLowerCase()}-${i}-${globalIdx}`,
-        name: `${title}${firstName} ${lastName}`,
+        name: `[Testarzt] ${title}${firstName} ${lastName}`,
         specialty,
         address: `${street} ${houseNum}`,
         city: cityName,
