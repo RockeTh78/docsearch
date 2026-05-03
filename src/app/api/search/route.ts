@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { SearchFormData, DoctorResult } from "@/types";
+import { searchLocalDoctors, getDoctorCount } from "@/lib/db";
 
 // Werte entsprechen dem OSM-Tag healthcare:speciality
 const SPECIALTY_OSM: Record<string, string[]> = {
@@ -121,6 +122,31 @@ export async function POST(req: NextRequest) {
     );
 
     if (!overpassRes.ok) throw new Error(`Overpass API Fehler: ${overpassRes.status}`);
+
+    // Testphase: lokale Testärzte haben Vorrang — wenn DB befüllt, nur diese zurückgeben
+    const localCount = getDoctorCount();
+    if (localCount > 0) {
+      const localDoctors = searchLocalDoctors(coords.lat, coords.lon, radiusM / 1000, specialty);
+      const results: DoctorResult[] = localDoctors
+        .sort((a, b) => ((a as any).distance ?? 0) - ((b as any).distance ?? 0))
+        .map(d => ({
+          id: d.id,
+          name: d.name,
+          specialty: d.specialty,
+          address: d.address,
+          city: d.city,
+          zip: d.zip,
+          phone: d.phone,
+          email: d.email,
+          website: d.website,
+          distance: (d as any).distance,
+        }));
+      // Always include the test doctor at top
+      const normalizedLocation = location.toLowerCase();
+      const isBadSoden = normalizedLocation.includes("bad soden") || normalizedLocation.includes("65812");
+      if (isBadSoden) results.unshift({ ...TEST_DOCTOR, specialty });
+      return NextResponse.json({ doctors: results, total: results.length });
+    }
 
     const overpassData = await overpassRes.json();
     const doctors: DoctorResult[] = (overpassData.elements ?? [])

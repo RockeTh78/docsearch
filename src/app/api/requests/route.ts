@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getRequestsByEmail } from "@/lib/db";
+import { getRequestsByEmail, deleteRequest } from "@/lib/db";
 
 // GET /api/requests?email=... — alle Anfragen eines Users
 export async function GET(req: NextRequest) {
@@ -14,4 +14,11 @@ export async function GET(req: NextRequest) {
     doctorEmail: r.email,
   }));
   return NextResponse.json({ requests });
+}
+
+export async function DELETE(req: NextRequest) {
+  const id = req.nextUrl.searchParams.get("id");
+  if (!id) return NextResponse.json({ error: "id fehlt" }, { status: 400 });
+  deleteRequest(id);
+  return NextResponse.json({ success: true });
 }

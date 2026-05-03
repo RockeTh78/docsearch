@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
-import { setRequestResponded, storeInboxEmail } from "@/lib/db";
+import { Resend } from "resend";
+import { setRequestResponded, storeInboxEmail, getRequestWithUser, getPushTokensByRequestId, logEmail } from "@/lib/db";
+import { sendPushNotifications } from "@/lib/push";
 
 async function extractAppointmentDate(emailBody: string): Promise<string | null> {
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -63,6 +65,28 @@ export async function POST(req: NextRequest) {
     }
 
     setRequestResponded(requestId, suggestedAt, bodyPlain);
+    logEmail({ requestId, direction: "received", subject, body: bodyPlain, fromAddr: fromAddr, toAddr: recipient });
+
+    // Push notification to patient
+    const pushTokens = getPushTokensByRequestId(requestId);
+    sendPushNotifications(pushTokens, "📬 Terminvorschlag erhalten", `${subject}`);
+
+    // Forward doctor's reply to the patient's email
+    const apiKey = process.env.RESEND_API_KEY;
+    if (apiKey) {
+      const row = getRequestWithUser(requestId);
+      const userEmail = row?.userEmail as string | undefined;
+      if (userEmail) {
+        const resend = new Resend(apiKey);
+        resend.emails.send({
+          from: "DocsSearch <noreply@facharzt-kontakt.org>",
+          to: userEmail,
+          subject: `[Terminvorschlag] ${subject}`,
+          text: `Die Arztpraxis hat Ihnen einen Terminvorschlag geschickt:\n\n---\nBetreff: ${subject}\n\n${bodyPlain}`,
+        }).catch(() => {});
+      }
+    }
+
     return NextResponse.json({ success: true, requestId, suggestedAt });
 
   } catch (e: any) {

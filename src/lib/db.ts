@@ -65,6 +65,47 @@ db.exec(`
   );
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS email_log (
+    id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    from_addr TEXT NOT NULL,
+    to_addr TEXT NOT NULL,
+    sent_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS push_tokens (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS doctors (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    specialty TEXT NOT NULL,
+    address TEXT NOT NULL,
+    city TEXT NOT NULL,
+    zip TEXT NOT NULL,
+    bundesland TEXT NOT NULL,
+    lat REAL NOT NULL,
+    lon REAL NOT NULL,
+    phone TEXT,
+    email TEXT,
+    website TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_doctors_specialty ON doctors(specialty);
+  CREATE INDEX IF NOT EXISTS idx_doctors_bundesland ON doctors(bundesland);
+`);
+
 function cuid(): string {
   return "c" + Math.random().toString(36).slice(2, 11) + Date.now().toString(36);
 }
@@ -137,6 +178,10 @@ export function markEmailReplied(id: string) {
   db.prepare("UPDATE inbox_emails SET replied=1 WHERE id=?").run(id);
 }
 
+export function markInboxEmailRepliedByRequestId(requestId: string) {
+  db.prepare("UPDATE inbox_emails SET replied=1, read=1 WHERE reply_to LIKE ?").run(`%reply+${requestId}@%`);
+}
+
 export function getRequestWithUser(requestId: string) {
   return db.prepare(`
     SELECT r.*, u.firstName, u.lastName, u.email as userEmail, u.phone, u.birthDate, u.insuranceType
@@ -150,8 +195,131 @@ export function confirmRequest(id: string, appointmentAt: string) {
     .run(appointmentAt, id);
 }
 
+export function deleteRequest(id: string) {
+  db.prepare("DELETE FROM requests WHERE id=?").run(id);
+}
+
+export function setRequestCounterProposed(id: string) {
+  db.prepare("UPDATE requests SET status='counter', updatedAt=datetime('now') WHERE id=?").run(id);
+}
+
+export function setRequestCancelled(id: string) {
+  db.prepare("UPDATE requests SET status='cancelled', appointmentAt=NULL, updatedAt=datetime('now') WHERE id=?").run(id);
+}
+
+export function logEmail(data: {
+  requestId: string; direction: "sent" | "received";
+  subject: string; body: string; fromAddr: string; toAddr: string;
+}) {
+  const id = "c" + Math.random().toString(36).slice(2, 11) + Date.now().toString(36);
+  db.prepare(`
+    INSERT INTO email_log (id, request_id, direction, subject, body, from_addr, to_addr)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(id, data.requestId, data.direction, data.subject, data.body, data.fromAddr, data.toAddr);
+}
+
+export function getEmailLogByRequestId(requestId: string) {
+  return db.prepare(
+    "SELECT * FROM email_log WHERE request_id=? ORDER BY sent_at ASC"
+  ).all(requestId) as Record<string, unknown>[];
+}
+
+export function upsertPushToken(email: string, token: string) {
+  const id = "c" + Math.random().toString(36).slice(2, 11) + Date.now().toString(36);
+  db.prepare(`
+    INSERT INTO push_tokens (id, email, token) VALUES (?, ?, ?)
+    ON CONFLICT(token) DO UPDATE SET email=excluded.email
+  `).run(id, email, token);
+}
+
+export function getPushTokensByRequestId(requestId: string): string[] {
+  const row = db.prepare(`
+    SELECT u.email FROM requests r JOIN users u ON r.userId=u.id WHERE r.id=?
+  `).get(requestId) as { email: string } | undefined;
+  if (!row) return [];
+  return (db.prepare("SELECT token FROM push_tokens WHERE email=?").all(row.email) as { token: string }[])
+    .map(r => r.token);
+}
+
 export function getRequestsByEmail(email: string) {
   const user = db.prepare("SELECT id FROM users WHERE email=?").get(email) as { id: string } | undefined;
   if (!user) return [];
   return db.prepare("SELECT * FROM requests WHERE userId=? ORDER BY createdAt DESC").all(user.id);
 }
+
+// ── Doctors (seed/test data) ──────────────────────────────────────────────
+
+export interface DbDoctor {
+  id: string; name: string; specialty: string; address: string;
+  city: string; zip: string; bundesland: string;
+  lat: number; lon: number; phone?: string; email?: string; website?: string;
+}
+
+export function upsertDoctor(d: DbDoctor) {
+  db.prepare(`
+    INSERT INTO doctors (id,name,specialty,address,city,zip,bundesland,lat,lon,phone,email,website)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET
+      name=excluded.name, specialty=excluded.specialty, address=excluded.address,
+      city=excluded.city, zip=excluded.zip, bundesland=excluded.bundesland,
+      lat=excluded.lat, lon=excluded.lon, phone=excluded.phone,
+      email=excluded.email, website=excluded.website
+  `).run(d.id, d.name, d.specialty, d.address, d.city, d.zip, d.bundesland,
+         d.lat, d.lon, d.phone ?? null, d.email ?? null, d.website ?? null);
+}
+
+export function getDoctorCount(): number {
+  return (db.prepare("SELECT COUNT(*) as n FROM doctors").get() as { n: number }).n;
+}
+
+export function searchLocalDoctors(
+  lat: number, lon: number, radiusKm: number, specialty: string
+): DbDoctor[] {
+  // Haversine approximation using bounding box pre-filter, then exact in-app calc
+  const latDelta = radiusKm / 111.0;
+  const lonDelta = radiusKm / (111.0 * Math.cos(lat * Math.PI / 180));
+  const rows = db.prepare(`
+    SELECT * FROM doctors
+    WHERE specialty = ?
+      AND lat BETWEEN ? AND ?
+      AND lon BETWEEN ? AND ?
+  `).all(specialty, lat - latDelta, lat + latDelta, lon - lonDelta, lon + lonDelta) as DbDoctor[];
+
+  return rows.filter(d => {
+    const dLat = (d.lat - lat) * Math.PI / 180;
+    const dLon = (d.lon - lon) * Math.PI / 180;
+    const a = Math.sin(dLat/2)**2 + Math.cos(lat*Math.PI/180)*Math.cos(d.lat*Math.PI/180)*Math.sin(dLon/2)**2;
+    const distKm = 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    (d as DbDoctor & { distance?: number }).distance = distKm;
+    return distKm <= radiusKm;
+  });
+}
+
+// Auto-seed doctors on startup if table is empty
+function autoSeedDoctors() {
+  try {
+    const count = getDoctorCount();
+    if (count === 0) {
+      // Dynamic import to avoid circular deps at module load time
+      import("./seed-doctors").then(({ generateSeedDoctors }) => {
+        const doctors = generateSeedDoctors();
+        const insert = db.prepare(`
+          INSERT OR IGNORE INTO doctors (id,name,specialty,address,city,zip,bundesland,lat,lon,phone,email,website)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        `);
+        const insertAll = db.transaction((docs: ReturnType<typeof generateSeedDoctors>) => {
+          for (const d of docs) {
+            insert.run(d.id, d.name, d.specialty, d.address, d.city, d.zip,
+                       d.bundesland, d.lat, d.lon, d.phone ?? null, d.email ?? null, null);
+          }
+        });
+        insertAll(doctors);
+        console.log(`[db] Auto-seeded ${doctors.length} test doctors`);
+      }).catch(e => console.error("[db] Auto-seed failed:", e));
+    }
+  } catch (e) {
+    console.error("[db] Auto-seed check failed:", e);
+  }
+}
+
+autoSeedDoctors();
