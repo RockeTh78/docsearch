@@ -3,8 +3,10 @@ import { Resend } from "resend";
 import {
   getRequestWithUser, confirmRequest,
   markInboxEmailRepliedByRequestId,
-  setRequestCounterProposed, setRequestCancelled, logEmail,
+  setRequestCounterProposed, setRequestCancelled, setRequestResponded,
+  getPushTokensByRequestId, logEmail,
 } from "@/lib/db";
+import { sendPushNotifications } from "@/lib/push";
 
 const TEST_MODE = true;
 const TEST_EMAIL = "testarzt@facharzt-kontakt.org";
@@ -168,6 +170,26 @@ ${contactBlock}`;
     confirmRequest(requestId, (appointmentAt ?? suggestedAt) as string);
   } else if (type === "counter" || type === "simple_request") {
     setRequestCounterProposed(requestId);
+    // Auto-simulate new doctor response after 8 seconds (test mode)
+    setTimeout(() => {
+      const now = new Date();
+      const days = 3 + Math.floor(Math.random() * 14);
+      const date = new Date(now.getTime() + days * 86400000);
+      if (date.getDay() === 0) date.setDate(date.getDate() + 1);
+      if (date.getDay() === 6) date.setDate(date.getDate() + 2);
+      const slots = ["08:00","09:00","10:00","10:30","11:00","14:00","15:00","15:30","16:00"];
+      const [h, m] = slots[Math.floor(Math.random() * slots.length)].split(":").map(Number);
+      date.setHours(h, m, 0, 0);
+      const suggestedNewAt = date.toISOString().slice(0, 16) + ":00";
+      const dateStr = date.toLocaleString("de-DE", {
+        weekday: "long", day: "2-digit", month: "long", year: "numeric",
+        hour: "2-digit", minute: "2-digit",
+      });
+      const msg = `Sehr geehrte(r) Patient(in),\n\nvielen Dank für Ihre Rückmeldung.\n\nWir bieten Ihnen folgenden neuen Termin an:\n${dateStr} Uhr\n\nBitte bringen Sie Ihre Versicherungskarte sowie eventuelle Vorbefunde mit.\n\nMit freundlichen Grüßen,\n[Testarzt] Testpraxis Dr. med. Max Mustermann\nKönigssteiner Str. 10, 65812 Bad Soden am Taunus\nTel: +49 6196 123456`;
+      setRequestResponded(requestId, suggestedNewAt, msg);
+      const tokens = getPushTokensByRequestId(requestId);
+      sendPushNotifications(tokens, "📬 Neuer Terminvorschlag", dateStr + " Uhr");
+    }, 8000);
   } else if (type === "cancel") {
     setRequestCancelled(requestId);
   }
